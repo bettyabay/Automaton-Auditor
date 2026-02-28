@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from src.state import Evidence, JudicialOpinion
+from src.state import AgentState, Evidence, JudicialOpinion
 
 
 # Setup LLM with structured output
@@ -287,3 +287,105 @@ def _format_evidence_for_prompt(evidence_list: List) -> str:
         )
     
     return "\n".join(formatted_parts)
+
+
+def prosecutor_node(state: AgentState) -> Dict:
+    """
+    Run Prosecutor on all criteria.
+    
+    This node evaluates all rubric dimensions targeting "github_repo" 
+    from the Prosecutor's adversarial perspective.
+    
+    Args:
+        state: The AgentState dictionary containing evidences and rubric_dimensions
+    
+    Returns:
+        Dictionary with "opinions" key containing list of JudicialOpinion objects
+    """
+    opinions = []
+    evidences = state.get("evidences", {})
+    rubric_dimensions = state.get("rubric_dimensions", [])
+    
+    for criterion in rubric_dimensions:
+        # Only evaluate criteria targeting github_repo
+        if criterion.get("target_artifact") == "github_repo":
+            criterion_id = criterion.get("id")
+            if criterion_id:
+                # Render opinion using the base function
+                opinion = render_judicial_opinion(
+                    evidence_dict=evidences,
+                    criterion_id=criterion_id,
+                    persona="Prosecutor",
+                    rubric_dimension=criterion
+                )
+                opinions.append(opinion)
+    
+    return {"opinions": opinions}
+
+
+def defense_node(state: AgentState) -> Dict:
+    """
+    Run Defense on all criteria.
+    
+    This node evaluates all rubric dimensions targeting "github_repo" 
+    from the Defense's generous, effort-rewarding perspective.
+    
+    Args:
+        state: The AgentState dictionary containing evidences and rubric_dimensions
+    
+    Returns:
+        Dictionary with "opinions" key containing list of JudicialOpinion objects
+    """
+    opinions = []
+    evidences = state.get("evidences", {})
+    rubric_dimensions = state.get("rubric_dimensions", [])
+    
+    for criterion in rubric_dimensions:
+        # Only evaluate criteria targeting github_repo
+        if criterion.get("target_artifact") == "github_repo":
+            criterion_id = criterion.get("id")
+            if criterion_id:
+                # Render opinion using the base function
+                opinion = render_judicial_opinion(
+                    evidence_dict=evidences,
+                    criterion_id=criterion_id,
+                    persona="Defense",
+                    rubric_dimension=criterion
+                )
+                opinions.append(opinion)
+    
+    return {"opinions": opinions}
+
+
+def tech_lead_node(state: AgentState) -> Dict:
+    """
+    Run Tech Lead on all criteria.
+    
+    This node evaluates all rubric dimensions targeting "github_repo" 
+    from the Tech Lead's pragmatic, functionality-focused perspective.
+    
+    Args:
+        state: The AgentState dictionary containing evidences and rubric_dimensions
+    
+    Returns:
+        Dictionary with "opinions" key containing list of JudicialOpinion objects
+    """
+    opinions = []
+    evidences = state.get("evidences", {})
+    rubric_dimensions = state.get("rubric_dimensions", [])
+    
+    for criterion in rubric_dimensions:
+        # Only evaluate criteria targeting github_repo
+        if criterion.get("target_artifact") == "github_repo":
+            criterion_id = criterion.get("id")
+            if criterion_id:
+                # Render opinion using the base function
+                opinion = render_judicial_opinion(
+                    evidence_dict=evidences,
+                    criterion_id=criterion_id,
+                    persona="TechLead",
+                    rubric_dimension=criterion
+                )
+                opinions.append(opinion)
+    
+    return {"opinions": opinions}

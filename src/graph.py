@@ -34,6 +34,12 @@ from src.nodes.detectives import (
     VisionInspectorNode,
     EvidenceAggregatorNode
 )
+from src.nodes.judges import (
+    prosecutor_node,
+    defense_node,
+    tech_lead_node
+)
+from src.nodes.justice import chief_justice_node
 
 # Load environment variables from .env file
 load_dotenv()
@@ -97,9 +103,112 @@ def load_rubric(rubric_path: str = "rubric.json") -> List[Dict]:
         return []
 
 
+def check_evidence_exists(state: AgentState) -> str:
+    """
+    Check if sufficient evidence exists to proceed to judicial layer.
+    
+    This conditional edge function determines whether to proceed to judges
+    or retry evidence collection if insufficient evidence was gathered.
+    
+    Args:
+        state: The AgentState dictionary
+    
+    Returns:
+        "sufficient_evidence" if enough evidence collected, "insufficient_evidence" otherwise
+    """
+    evidences = state.get("evidences", {})
+    # Count unique criteria with evidence
+    criteria_with_evidence = len([k for k, v in evidences.items() if v and len(v) > 0])
+    
+    # Minimum threshold: at least 5 criteria should have evidence
+    if criteria_with_evidence < 5:
+        return "insufficient_evidence"
+    return "sufficient_evidence"
+
+
+def create_full_graph() -> StateGraph:
+    """
+    Create and configure the complete Automaton Auditor StateGraph.
+    
+    Graph Structure:
+        START
+          ↓
+        [RepoInvestigator] ─┐
+        [DocAnalyst] ───────┼─→ EvidenceAggregator
+        [VisionInspector] ──┘
+          ↓ (conditional: check evidence)
+        [Prosecutor] ───────┐
+        [Defense] ─────────┼─→ ChiefJustice → END
+        [TechLead] ────────┘
+    
+    The graph implements:
+    - Detective layer: Parallel fan-out for evidence collection
+    - Evidence aggregation: Fan-in synchronization point
+    - Conditional routing: Check evidence sufficiency
+    - Judicial layer: Parallel fan-out for opinion generation
+    - Chief Justice: Final synthesis and report generation
+    - State reducers: operator.ior for evidences, operator.add for opinions
+    
+    Returns:
+        Compiled StateGraph ready for execution
+    """
+    # Create StateGraph with AgentState
+    builder = StateGraph(AgentState)
+    
+    # Add all nodes
+    builder.add_node("repo_investigator", RepoInvestigatorNode)
+    builder.add_node("doc_analyst", DocAnalystNode)
+    builder.add_node("vision_inspector", VisionInspectorNode)  # Optional
+    builder.add_node("evidence_aggregator", EvidenceAggregatorNode)
+    builder.add_node("prosecutor", prosecutor_node)
+    builder.add_node("defense", defense_node)
+    builder.add_node("tech_lead", tech_lead_node)
+    builder.add_node("chief_justice", chief_justice_node)
+    
+    # Detective layer - PARALLEL FAN-OUT
+    builder.add_edge(START, "repo_investigator")
+    builder.add_edge(START, "doc_analyst")
+    builder.add_edge(START, "vision_inspector")  # Optional
+    
+    # Fan-in to aggregator
+    builder.add_edge("repo_investigator", "evidence_aggregator")
+    builder.add_edge("doc_analyst", "evidence_aggregator")
+    builder.add_edge("vision_inspector", "evidence_aggregator")
+    
+    # Add conditional edges for error handling
+    # Check if sufficient evidence exists before proceeding to judges
+    # Note: Conditional edges route to one node, so we route to prosecutor
+    # and then prosecutor fans out to defense and tech_lead for parallel execution
+    builder.add_conditional_edges(
+        "evidence_aggregator",
+        check_evidence_exists,
+        {
+            "insufficient_evidence": END,  # End early if insufficient (or could retry)
+            "sufficient_evidence": "prosecutor"  # Proceed to judicial layer
+        }
+    )
+    
+    # Judicial layer - PARALLEL FAN-OUT
+    # Prosecutor routes to both defense and tech_lead for parallel execution
+    builder.add_edge("prosecutor", "defense")
+    builder.add_edge("prosecutor", "tech_lead")
+    
+    # Fan-in to chief justice (both defense and tech_lead must complete)
+    builder.add_edge("defense", "chief_justice")
+    builder.add_edge("tech_lead", "chief_justice")
+    
+    # End
+    builder.add_edge("chief_justice", END)
+    
+    return builder.compile()
+
+
 def create_auditor_graph() -> StateGraph:
     """
-    Create and configure the Automaton Auditor StateGraph.
+    Create and configure the Automaton Auditor StateGraph (legacy function).
+    
+    This is a simplified version for backward compatibility.
+    For full functionality, use create_full_graph() instead.
     
     Graph Structure:
         START
@@ -107,11 +216,6 @@ def create_auditor_graph() -> StateGraph:
         [RepoInvestigator] ─┐
         [DocAnalyst] ───────┼─→ EvidenceAggregator → END
         [VisionInspector] ──┘
-    
-    The graph implements:
-    - Parallel fan-out: Detectives run concurrently
-    - Fan-in synchronization: EvidenceAggregator collects all evidence
-    - State reducers: operator.ior for evidences, operator.add for opinions
     
     Returns:
         Compiled StateGraph ready for execution
@@ -195,6 +299,10 @@ def test_graph_basic():
         print("     - doc_analyst")
         print("     - vision_inspector")
         print("     - evidence_aggregator")
+        print("     - prosecutor")
+        print("     - defense")
+        print("     - tech_lead")
+        print("     - chief_justice")
         print("     - END")
         print("   Graph structure validated")
     except Exception as e:
@@ -227,8 +335,8 @@ def run_audit(repo_url: str, pdf_path: str, rubric_path: str = "rubric.json") ->
     # Load rubric
     rubric_dimensions = load_rubric(rubric_path)
     
-    # Create graph
-    app = create_auditor_graph()
+    # Create graph (use full graph for complete workflow)
+    app = create_full_graph()
     
     # Initialize state
     initial_state: Dict = {
