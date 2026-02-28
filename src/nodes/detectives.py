@@ -15,7 +15,13 @@ from typing import Dict, List, Optional, Tuple
 
 from src.state import Evidence
 from src.tools.repo_tools import clone_repository, extract_git_history
-from src.tools.doc_tools import ingest_pdf, extract_keywords, extract_file_paths
+from src.tools.doc_tools import (
+    ingest_pdf, 
+    extract_keywords, 
+    extract_file_paths,
+    extract_images_from_pdf,
+    analyze_diagram
+)
 
 
 class RepoInvestigator:
@@ -1084,6 +1090,313 @@ def DocAnalystNode(state: Dict) -> Dict:
         if goal not in evidences_by_goal:
             evidences_by_goal[goal] = []
         evidences_by_goal[goal].append(evidence)
+    
+    return {
+        "evidences": evidences_by_goal
+    }
+
+
+class VisionInspector:
+    """
+    The Visual Detective - collects objective forensic evidence from PDF diagrams.
+    
+    This agent analyzes architectural diagrams in PDF reports to verify:
+    - Diagram type (LangGraph State Machine, sequence diagram, flowchart, etc.)
+    - Parallel branch representation (detectives and judges)
+    - Flow accuracy matching expected architecture
+    
+    All analysis is objective fact-checking using multimodal LLM vision capabilities.
+    """
+    
+    def __init__(self, pdf_path: str):
+        """
+        Initialize the VisionInspector.
+        
+        Args:
+            pdf_path: Path to the PDF report containing diagrams
+        """
+        self.pdf_path = pdf_path
+        self._images_extracted = False
+        self._image_paths: List[str] = []
+    
+    def investigate(
+        self, 
+        rubric_dimensions: List[Dict]
+    ) -> List[Evidence]:
+        """
+        Perform complete forensic investigation of PDF diagrams.
+        
+        Args:
+            rubric_dimensions: List of rubric dimension configurations
+        
+        Returns:
+            List of Evidence objects for "swarm_visual" dimension
+        """
+        evidence_list = []
+        
+        # Filter dimensions that target pdf_images
+        visual_dimensions = [
+            dim for dim in rubric_dimensions
+            if dim.get("target_artifact") == "pdf_images"
+        ]
+        
+        # Check if swarm_visual dimension exists
+        swarm_visual_dim = next(
+            (dim for dim in visual_dimensions if dim.get("id") == "swarm_visual"),
+            None
+        )
+        
+        if not swarm_visual_dim:
+            # Return evidence indicating dimension not found
+            return [
+                Evidence(
+                    goal="swarm_visual",
+                    found=False,
+                    content="swarm_visual dimension not found in rubric",
+                    location=self.pdf_path,
+                    rationale="No swarm_visual dimension configured in rubric",
+                    confidence=0.0
+                )
+            ]
+        
+        # Extract images from PDF
+        try:
+            if not self._images_extracted:
+                self._image_paths = extract_images_from_pdf(self.pdf_path)
+                self._images_extracted = True
+        except Exception as e:
+            # Return error evidence if image extraction fails
+            return [
+                Evidence(
+                    goal="swarm_visual",
+                    found=False,
+                    content=f"Failed to extract images from PDF: {str(e)}",
+                    location=self.pdf_path,
+                    rationale=f"Image extraction error: {str(e)}",
+                    confidence=0.0
+                )
+            ]
+        
+        # If no images found, return evidence
+        if not self._image_paths:
+            return [
+                Evidence(
+                    goal="swarm_visual",
+                    found=False,
+                    content="No images found in PDF",
+                    location=self.pdf_path,
+                    rationale="PDF contains no embedded images/diagrams",
+                    confidence=0.0
+                )
+            ]
+        
+        # Analyze each image
+        all_evidence = []
+        for image_path in self._image_paths:
+            evidence = self._investigate_diagram(image_path, swarm_visual_dim)
+            if evidence:
+                all_evidence.append(evidence)
+        
+        # If no valid diagrams found, return a summary evidence
+        if not all_evidence:
+            return [
+                Evidence(
+                    goal="swarm_visual",
+                    found=False,
+                    content=f"Found {len(self._image_paths)} images but none matched expected diagram patterns",
+                    location=self.pdf_path,
+                    rationale="Images exist but do not represent LangGraph State Machine architecture",
+                    confidence=0.0
+                )
+            ]
+        
+        return all_evidence
+    
+    def _investigate_diagram(
+        self, 
+        image_path: str,
+        dimension: Dict
+    ) -> Optional[Evidence]:
+        """
+        Investigate a single diagram image.
+        
+        Args:
+            image_path: Path to the image file to analyze
+            dimension: Rubric dimension configuration for swarm_visual
+        
+        Returns:
+            Evidence object with diagram analysis, or None if analysis fails
+        """
+        try:
+            # Analyze diagram using multimodal LLM
+            analysis = analyze_diagram(image_path)
+            
+            # Extract key information
+            diagram_type = analysis.get("diagram_type", "other")
+            is_langgraph = analysis.get("is_langgraph_state_machine", False)
+            shows_parallel = analysis.get("shows_parallel_branches", False)
+            has_detectives_parallel = analysis.get("has_detectives_parallel", False)
+            has_judges_parallel = analysis.get("has_judges_parallel", False)
+            has_aggregation = analysis.get("has_aggregation_nodes", False)
+            accuracy_score = analysis.get("accuracy_score", 0.0)
+            flow_description = analysis.get("flow_description", "")
+            analysis_details = analysis.get("analysis_details", "")
+            
+            # Determine if diagram matches expected pattern
+            # Expected: LangGraph State Machine with parallel detectives and judges
+            matches_pattern = (
+                is_langgraph and 
+                shows_parallel and 
+                (has_detectives_parallel or has_judges_parallel)
+            )
+            
+            # Build content description
+            image_filename = Path(image_path).name
+            content_parts = [
+                f"Diagram Type: {diagram_type}",
+                f"Is LangGraph State Machine: {is_langgraph}",
+                f"Shows Parallel Branches: {shows_parallel}",
+                f"Detectives in Parallel: {has_detectives_parallel}",
+                f"Judges in Parallel: {has_judges_parallel}",
+                f"Has Aggregation Nodes: {has_aggregation}",
+                f"Accuracy Score: {accuracy_score:.2f}",
+                "",
+                f"Flow Description: {flow_description}",
+                "",
+                f"Full Analysis: {analysis_details[:500]}..." if len(analysis_details) > 500 else f"Full Analysis: {analysis_details}"
+            ]
+            content = "\n".join(content_parts)
+            
+            # Build rationale
+            if matches_pattern and accuracy_score > 0.7:
+                rationale = (
+                    f"Diagram accurately represents LangGraph State Machine architecture "
+                    f"with parallel execution (detectives: {has_detectives_parallel}, "
+                    f"judges: {has_judges_parallel}) and aggregation nodes. "
+                    f"Accuracy score: {accuracy_score:.2f}"
+                )
+                confidence = min(0.95, accuracy_score + 0.1)  # Boost confidence for good matches
+                found = True
+            elif matches_pattern:
+                rationale = (
+                    f"Diagram shows LangGraph State Machine with parallel branches, "
+                    f"but accuracy score ({accuracy_score:.2f}) indicates some discrepancies "
+                    f"from expected architecture."
+                )
+                confidence = accuracy_score
+                found = True
+            elif is_langgraph:
+                rationale = (
+                    f"Diagram is a LangGraph State Machine but does not clearly show "
+                    f"parallel execution patterns for detectives/judges."
+                )
+                confidence = 0.4
+                found = True
+            elif shows_parallel:
+                rationale = (
+                    f"Diagram shows parallel branches but is not a LangGraph State Machine "
+                    f"(classified as: {diagram_type})."
+                )
+                confidence = 0.3
+                found = True
+            else:
+                rationale = (
+                    f"Diagram does not match expected architecture pattern. "
+                    f"Type: {diagram_type}, Parallel: {shows_parallel}"
+                )
+                confidence = 0.1
+                found = False
+            
+            # Determine if flow is linear vs parallel
+            flow_analysis = "parallel" if shows_parallel else "linear"
+            if not shows_parallel:
+                rationale += " Flow appears linear rather than parallel."
+            
+            return Evidence(
+                goal="swarm_visual",
+                found=found,
+                content=content,
+                location=image_filename,
+                rationale=rationale,
+                confidence=confidence
+            )
+        
+        except Exception as e:
+            # Return error evidence if analysis fails
+            return Evidence(
+                goal="swarm_visual",
+                found=False,
+                content=f"Failed to analyze diagram: {str(e)}",
+                location=Path(image_path).name,
+                rationale=f"Diagram analysis error: {str(e)}",
+                confidence=0.0
+            )
+
+
+def VisionInspectorNode(state: Dict) -> Dict:
+    """
+    LangGraph node function for VisionInspector.
+    
+    This node collects forensic evidence from PDF diagrams for the
+    "swarm_visual" dimension targeting "pdf_images" in the rubric.
+    
+    Note: This node is optional - it will gracefully handle cases where
+    no images are found or vision API is unavailable.
+    
+    Args:
+        state: The AgentState dictionary containing pdf_path and rubric_dimensions
+    
+    Returns:
+        Dictionary with updated evidences (using reducer to merge)
+    """
+    pdf_path = state.get("pdf_path")
+    rubric_dimensions = state.get("rubric_dimensions", [])
+    
+    if not pdf_path:
+        return {
+            "evidences": {
+                "swarm_visual": [
+                    Evidence(
+                        goal="swarm_visual",
+                        found=False,
+                        content="No PDF path provided",
+                        location="state",
+                        rationale="pdf_path missing from state",
+                        confidence=0.0
+                    )
+                ]
+            }
+        }
+    
+    # Initialize inspector
+    inspector = VisionInspector(pdf_path)
+    
+    # Collect evidence
+    evidence_list = inspector.investigate(rubric_dimensions)
+    
+    # Group evidence by goal (should all be "swarm_visual")
+    evidences_by_goal: Dict[str, List[Evidence]] = {}
+    for evidence in evidence_list:
+        goal = evidence.goal
+        if goal not in evidences_by_goal:
+            evidences_by_goal[goal] = []
+        evidences_by_goal[goal].append(evidence)
+    
+    # Clean up temporary image files
+    try:
+        for image_path in inspector._image_paths:
+            if os.path.exists(image_path):
+                os.remove(image_path)
+        # Remove temporary directory if empty
+        if inspector._image_paths:
+            temp_dir = os.path.dirname(inspector._image_paths[0])
+            try:
+                if os.path.exists(temp_dir) and not os.listdir(temp_dir):
+                    os.rmdir(temp_dir)
+            except OSError:
+                pass  # Directory not empty or already removed
+    except Exception as e:
+        print(f"Warning: Failed to clean up temporary image files: {e}")
     
     return {
         "evidences": evidences_by_goal

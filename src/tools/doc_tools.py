@@ -3,11 +3,14 @@ Documentation tools for PDF analysis and text extraction.
 
 This module provides RAG-lite document processing capabilities for analyzing
 PDF reports. It extracts text, chunks documents for efficient querying,
-and identifies key concepts and file references.
+identifies key concepts and file references, and analyzes images/diagrams
+using multimodal LLMs.
 """
 
 import re
 import os
+import tempfile
+import base64
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 
@@ -22,6 +25,19 @@ try:
     DOCLING_AVAILABLE = True
 except ImportError:
     DOCLING_AVAILABLE = False
+
+try:
+    import fitz  # PyMuPDF
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    PYMUPDF_AVAILABLE = False
+
+try:
+    from langchain_openai import ChatOpenAI
+    from langchain_core.messages import HumanMessage
+    LANGCHAIN_OPENAI_AVAILABLE = True
+except ImportError:
+    LANGCHAIN_OPENAI_AVAILABLE = False
 
 
 # Default chunk size for RAG-lite approach (characters)
@@ -582,3 +598,391 @@ def extract_file_paths(text: str) -> List[str]:
             filtered_paths.append(path)
     
     return filtered_paths
+
+
+def extract_images_from_pdf(pdf_path: str) -> List[str]:
+    """
+    Extract images from a PDF document and save them temporarily.
+    
+    This function uses PyMuPDF (fitz) to extract all images embedded in a PDF,
+    saves them to temporary files, and returns a list of image file paths.
+    The temporary files should be cleaned up by the caller after processing.
+    
+    Args:
+        pdf_path: Path to the PDF file to extract images from
+    
+    Returns:
+        List of temporary file paths to extracted images (PNG format)
+    
+    Raises:
+        FileNotFoundError: If the PDF file does not exist
+        ValueError: If the PDF path is invalid
+        RuntimeError: If image extraction fails or PyMuPDF is not available
+    
+    Example:
+        >>> image_paths = extract_images_from_pdf("report.pdf")
+        >>> print(f"Extracted {len(image_paths)} images")
+        Extracted 3 images
+        >>> # Process images...
+        >>> # Clean up: [os.remove(path) for path in image_paths]
+    
+    Notes:
+        - Images are saved as PNG files in a temporary directory
+        - Temporary files persist until explicitly deleted
+        - Only embedded images are extracted (not text rendered as images)
+        - Returns empty list if no images are found
+    """
+    # Validate input
+    if not pdf_path or not isinstance(pdf_path, str):
+        raise ValueError(f"Invalid PDF path: {pdf_path}")
+    
+    if not os.path.exists(pdf_path):
+        raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+    
+    if not pdf_path.lower().endswith('.pdf'):
+        raise ValueError(f"File is not a PDF: {pdf_path}")
+    
+    if not PYMUPDF_AVAILABLE:
+        raise RuntimeError(
+            "PyMuPDF (fitz) is not available. Please install it: "
+            "uv add pymupdf"
+        )
+    
+    try:
+        # Open PDF with PyMuPDF
+        doc = fitz.open(pdf_path)
+        image_paths = []
+        temp_dir = tempfile.mkdtemp(prefix="pdf_images_")
+        
+        image_count = 0
+        
+        # Iterate through all pages
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            
+            # Get list of images on this page
+            image_list = page.get_images(full=True)
+            
+            for img_index, img in enumerate(image_list):
+                try:
+                    # Get image data
+                    xref = img[0]
+                    base_image = doc.extract_image(xref)
+                    image_bytes = base_image["image"]
+                    image_ext = base_image["ext"]
+                    
+                    # Save to temporary file
+                    # Use PNG format for consistency (convert if needed)
+                    image_filename = f"page_{page_num + 1}_img_{img_index + 1}.png"
+                    image_path = os.path.join(temp_dir, image_filename)
+                    
+                    # If image is already PNG, save directly
+                    if image_ext.lower() == "png":
+                        with open(image_path, "wb") as img_file:
+                            img_file.write(image_bytes)
+                    else:
+                        # Convert other formats to PNG using PIL if available
+                        try:
+                            from PIL import Image
+                            import io
+                            img_pil = Image.open(io.BytesIO(image_bytes))
+                            img_pil.save(image_path, "PNG")
+                        except ImportError:
+                            # Fallback: save in original format
+                            image_path = os.path.join(
+                                temp_dir, 
+                                f"page_{page_num + 1}_img_{img_index + 1}.{image_ext}"
+                            )
+                            with open(image_path, "wb") as img_file:
+                                img_file.write(image_bytes)
+                    
+                    image_paths.append(image_path)
+                    image_count += 1
+                    
+                except Exception as e:
+                    # Skip corrupted images but continue processing
+                    print(f"Warning: Failed to extract image {img_index} from page {page_num + 1}: {e}")
+                    continue
+        
+        doc.close()
+        
+        if image_count == 0:
+            print(f"No images found in PDF: {pdf_path}")
+        
+        return image_paths
+    
+    except Exception as e:
+        error_msg = str(e).lower()
+        if "encrypted" in error_msg or "password" in error_msg:
+            raise RuntimeError(
+                f"PDF is encrypted and cannot be read: {pdf_path}. "
+                "Please provide an unencrypted PDF."
+            )
+        elif "corrupted" in error_msg or "invalid" in error_msg:
+            raise RuntimeError(
+                f"PDF appears to be corrupted or invalid: {pdf_path}. "
+                "Please verify the file is a valid PDF."
+            )
+        else:
+            raise RuntimeError(
+                f"Failed to extract images from PDF: {pdf_path}. Error: {str(e)}"
+            )
+
+
+def analyze_diagram(image_path: str) -> Dict:
+    """
+    Analyze a diagram image using a multimodal LLM (GPT-4V or Gemini Pro Vision).
+    
+    This function uses a vision-capable LLM to classify and analyze architectural
+    diagrams, checking if they accurately represent LangGraph State Machine flows
+    with parallel branches for detectives and judges.
+    
+    Args:
+        image_path: Path to the image file to analyze
+    
+    Returns:
+        Dict containing:
+            - diagram_type: Classification of diagram type
+            - is_langgraph_state_machine: Boolean indicating if it's a LangGraph diagram
+            - shows_parallel_branches: Boolean indicating if parallel execution is shown
+            - flow_description: Text description of the diagram flow
+            - accuracy_score: Float 0-1 indicating how well it matches expected architecture
+            - has_detectives_parallel: Boolean indicating if detectives run in parallel
+            - has_judges_parallel: Boolean indicating if judges run in parallel
+            - has_aggregation_nodes: Boolean indicating if aggregation/sync nodes exist
+            - analysis_details: Detailed analysis text from LLM
+    
+    Raises:
+        FileNotFoundError: If the image file does not exist
+        RuntimeError: If LLM analysis fails or vision API is not available
+    
+    Example:
+        >>> analysis = analyze_diagram("diagram.png")
+        >>> print(analysis["diagram_type"])
+        langgraph_state_machine
+        >>> print(analysis["shows_parallel_branches"])
+        True
+    
+    Notes:
+        - Requires OpenAI API key with GPT-4V access or Gemini Pro Vision
+        - Uses langchain-openai ChatOpenAI with vision support
+        - Falls back to basic image analysis if LLM is unavailable
+    """
+    # Validate input
+    if not image_path or not isinstance(image_path, str):
+        raise ValueError(f"Invalid image path: {image_path}")
+    
+    if not os.path.exists(image_path):
+        raise FileNotFoundError(f"Image file not found: {image_path}")
+    
+    # Check if LLM is available
+    if not LANGCHAIN_OPENAI_AVAILABLE:
+        # Fallback: return basic analysis without LLM
+        return {
+            "diagram_type": "unknown",
+            "is_langgraph_state_machine": False,
+            "shows_parallel_branches": False,
+            "flow_description": "LLM analysis unavailable. Please install langchain-openai.",
+            "accuracy_score": 0.0,
+            "has_detectives_parallel": False,
+            "has_judges_parallel": False,
+            "has_aggregation_nodes": False,
+            "analysis_details": "Vision API not available. Install langchain-openai and set OPENAI_API_KEY."
+        }
+    
+    try:
+        # Read image file
+        with open(image_path, "rb") as img_file:
+            image_data = img_file.read()
+        
+        # Encode image as base64 for API
+        image_base64 = base64.b64encode(image_data).decode('utf-8')
+        
+        # Determine image format
+        image_ext = Path(image_path).suffix.lower()
+        mime_type = {
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp'
+        }.get(image_ext, 'image/png')
+        
+        # Create vision prompt
+        prompt = """Analyze this architectural diagram and provide a structured assessment.
+
+Classify the diagram type:
+- Is it a LangGraph State Machine diagram?
+- Is it a sequence diagram?
+- Is it a generic flowchart?
+- Or something else?
+
+Analyze the flow:
+- Does it show parallel branches for detectives (RepoInvestigator, DocAnalyst, VisionInspector)?
+- Does it show parallel branches for judges (Prosecutor, Defense, Tech Lead)?
+- Are there aggregation/synchronization nodes (EvidenceAggregator, JudicialAggregator)?
+- Does the flow match: START -> [Detectives in parallel] -> EvidenceAggregator -> [Judges in parallel] -> ChiefJustice -> END?
+
+Provide:
+1. Diagram type classification
+2. Whether parallel execution is shown
+3. A detailed description of the flow
+4. An accuracy score (0-1) indicating how well it matches the expected LangGraph architecture
+5. Specific observations about detectives, judges, and aggregation nodes
+
+Format your response as structured text that can be parsed."""
+        
+        # Initialize vision-capable LLM
+        # Use GPT-4V or GPT-4o (vision models)
+        try:
+            llm = ChatOpenAI(
+                model="gpt-4o",  # or "gpt-4-vision-preview" for older models
+                temperature=0.1,
+                max_tokens=1000
+            )
+            
+            # Create message with image
+            message = HumanMessage(
+                content=[
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{image_base64}"
+                        }
+                    }
+                ]
+            )
+            
+            # Get LLM response
+            response = llm.invoke([message])
+            analysis_text = response.content if hasattr(response, 'content') else str(response)
+            
+        except Exception as e:
+            # If vision API fails, return error analysis
+            return {
+                "diagram_type": "error",
+                "is_langgraph_state_machine": False,
+                "shows_parallel_branches": False,
+                "flow_description": f"LLM analysis failed: {str(e)}",
+                "accuracy_score": 0.0,
+                "has_detectives_parallel": False,
+                "has_judges_parallel": False,
+                "has_aggregation_nodes": False,
+                "analysis_details": f"Error during vision API call: {str(e)}"
+            }
+        
+        # Parse LLM response to extract structured information
+        analysis_dict = _parse_diagram_analysis(analysis_text)
+        analysis_dict["analysis_details"] = analysis_text
+        
+        return analysis_dict
+    
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to analyze diagram: {image_path}. Error: {str(e)}"
+        )
+
+
+def _parse_diagram_analysis(analysis_text: str) -> Dict:
+    """
+    Parse LLM analysis text to extract structured information.
+    
+    This helper function extracts key information from the LLM's text response
+    about the diagram analysis.
+    """
+    analysis_lower = analysis_text.lower()
+    
+    # Classify diagram type
+    diagram_type = "other"
+    if "langgraph" in analysis_lower or "state machine" in analysis_lower or "stategraph" in analysis_lower:
+        diagram_type = "langgraph_state_machine"
+    elif "sequence" in analysis_lower:
+        diagram_type = "sequence_diagram"
+    elif "flowchart" in analysis_lower or "flow chart" in analysis_lower:
+        diagram_type = "flowchart"
+    
+    # Check for parallel branches
+    has_detectives_parallel = any(term in analysis_lower for term in [
+        "detectives in parallel", "parallel detectives", "detectives run concurrently",
+        "fan-out", "fan out", "parallel branches for detectives"
+    ])
+    
+    has_judges_parallel = any(term in analysis_lower for term in [
+        "judges in parallel", "parallel judges", "judges run concurrently",
+        "fan-out", "fan out", "parallel branches for judges"
+    ])
+    
+    has_aggregation_nodes = any(term in analysis_lower for term in [
+        "aggregator", "aggregation", "synchronization", "sync", "fan-in", "fan in"
+    ])
+    
+    shows_parallel_branches = has_detectives_parallel or has_judges_parallel
+    
+    # Extract accuracy score (look for numbers 0-1)
+    accuracy_score = 0.0
+    score_patterns = [
+        r"accuracy[:\s]+([0-9.]+)",
+        r"score[:\s]+([0-9.]+)",
+        r"([0-9.]+)\s*out\s*of\s*1",
+        r"([0-9.]+)\s*/\s*1"
+    ]
+    for pattern in score_patterns:
+        match = re.search(pattern, analysis_lower)
+        if match:
+            try:
+                score = float(match.group(1))
+                if 0 <= score <= 1:
+                    accuracy_score = score
+                    break
+            except ValueError:
+                continue
+    
+    # Extract flow description (first substantial paragraph)
+    flow_description = analysis_text.split('\n\n')[0] if '\n\n' in analysis_text else analysis_text[:200]
+    
+    return {
+        "diagram_type": diagram_type,
+        "is_langgraph_state_machine": diagram_type == "langgraph_state_machine",
+        "shows_parallel_branches": shows_parallel_branches,
+        "flow_description": flow_description.strip(),
+        "accuracy_score": accuracy_score,
+        "has_detectives_parallel": has_detectives_parallel,
+        "has_judges_parallel": has_judges_parallel,
+        "has_aggregation_nodes": has_aggregation_nodes
+    }
+
+
+def classify_diagram_type(image_path: str) -> str:
+    """
+    Classify the type of diagram in an image.
+    
+    This is a simplified version of analyze_diagram that only returns
+    the diagram type classification without full analysis.
+    
+    Args:
+        image_path: Path to the image file to classify
+    
+    Returns:
+        str: One of:
+            - "langgraph_state_machine" - LangGraph StateGraph diagram
+            - "sequence_diagram" - Sequence diagram (UML-style)
+            - "flowchart" - Generic flowchart
+            - "other" - Unknown or unclassifiable diagram type
+            - "error" - Analysis failed
+    
+    Raises:
+        FileNotFoundError: If the image file does not exist
+        RuntimeError: If classification fails
+    
+    Example:
+        >>> diagram_type = classify_diagram_type("diagram.png")
+        >>> print(diagram_type)
+        langgraph_state_machine
+    """
+    try:
+        analysis = analyze_diagram(image_path)
+        return analysis.get("diagram_type", "other")
+    except Exception as e:
+        print(f"Warning: Failed to classify diagram type: {e}")
+        return "error"

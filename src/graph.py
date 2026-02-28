@@ -31,6 +31,7 @@ from src.state import AgentState
 from src.nodes.detectives import (
     RepoInvestigatorNode,
     DocAnalystNode,
+    VisionInspectorNode,
     EvidenceAggregatorNode
 )
 
@@ -104,8 +105,8 @@ def create_auditor_graph() -> StateGraph:
         START
           ↓
         [RepoInvestigator] ─┐
-                            ├─→ EvidenceAggregator → END
-        [DocAnalyst] ────────┘
+        [DocAnalyst] ───────┼─→ EvidenceAggregator → END
+        [VisionInspector] ──┘
     
     The graph implements:
     - Parallel fan-out: Detectives run concurrently
@@ -121,17 +122,20 @@ def create_auditor_graph() -> StateGraph:
     # Add nodes
     workflow.add_node("repo_investigator", RepoInvestigatorNode)
     workflow.add_node("doc_analyst", DocAnalystNode)
+    workflow.add_node("vision_inspector", VisionInspectorNode)
     workflow.add_node("evidence_aggregator", EvidenceAggregatorNode)
     
     # Add edges for parallel execution (FAN-OUT)
-    # Both detectives start from START and run in parallel
+    # All detectives start from START and run in parallel
     workflow.add_edge(START, "repo_investigator")
     workflow.add_edge(START, "doc_analyst")
+    workflow.add_edge(START, "vision_inspector")
     
     # Add edges for synchronization (FAN-IN)
-    # Both detectives feed into the aggregator
+    # All detectives feed into the aggregator
     workflow.add_edge("repo_investigator", "evidence_aggregator")
     workflow.add_edge("doc_analyst", "evidence_aggregator")
+    workflow.add_edge("vision_inspector", "evidence_aggregator")
     
     # Add final edge to END
     workflow.add_edge("evidence_aggregator", END)
@@ -189,6 +193,7 @@ def test_graph_basic():
         print("     - START")
         print("     - repo_investigator")
         print("     - doc_analyst")
+        print("     - vision_inspector")
         print("     - evidence_aggregator")
         print("     - END")
         print("   Graph structure validated")
