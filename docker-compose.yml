@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  automaton-auditor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: automaton-auditor:latest
+    container_name: automaton-auditor
+    environment:
+      # Override these in .env file or docker-compose.override.yml
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY}
+      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-automaton-auditor}
+      - AUDIT_REPO_URL=${AUDIT_REPO_URL}
+      - AUDIT_PDF_PATH=${AUDIT_PDF_PATH:-reports/final_report.pdf}
+    volumes:
+      # Mount audit outputs
+      - ./audit:/app/audit
+      # Mount reports for input
+      - ./reports:/app/reports
+    working_dir: /app
+    # Override command as needed
+    # command: ["uv", "run", "python", "scripts/peer_audit.py"]
+    restart: unless-stopped
