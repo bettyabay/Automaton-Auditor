@@ -12,6 +12,7 @@ Each judge has a distinct persona with conflicting philosophies:
 """
 
 import json
+import os
 from typing import Dict, List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -20,9 +21,31 @@ from langchain_openai import ChatOpenAI
 from src.state import AgentState, Evidence, JudicialOpinion
 
 
-# Setup LLM with structured output
-llm = ChatOpenAI(model="gpt-4-turbo-preview", temperature=0.2)
-structured_llm = llm.with_structured_output(JudicialOpinion)
+# Lazy LLM initialization - only create when needed
+_llm = None
+_structured_llm = None
+
+def get_llm():
+    """Get or create the LLM instance (lazy initialization)."""
+    global _llm
+    if _llm is None:
+        # Use gpt-4o or gpt-4-turbo for better structured output support
+        # gpt-4-turbo-preview doesn't support json_schema method, so we use gpt-4o
+        model = os.getenv("OPENAI_MODEL", "gpt-4o")
+        _llm = ChatOpenAI(model=model, temperature=0.2)
+    return _llm
+
+def get_structured_llm():
+    """Get or create the structured LLM instance (lazy initialization)."""
+    global _structured_llm
+    if _structured_llm is None:
+        # Use method='function_calling' for compatibility with all models
+        # or 'json_schema' for models that support it (gpt-4o, gpt-4-turbo)
+        _structured_llm = get_llm().with_structured_output(
+            JudicialOpinion,
+            method="function_calling"  # More compatible across models
+        )
+    return _structured_llm
 
 
 # Prosecutor System Prompt
@@ -224,9 +247,9 @@ def render_judicial_opinion(
         HumanMessage(content=f"Evaluate the evidence for criterion: {criterion_name}")
     ]
     
-    # Call structured LLM
+    # Call structured LLM (lazy initialization)
     try:
-        opinion = structured_llm.invoke(messages)
+        opinion = get_structured_llm().invoke(messages)
         
         # Ensure the opinion has the correct judge and criterion_id
         # (in case the LLM doesn't follow instructions perfectly)

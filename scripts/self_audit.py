@@ -49,7 +49,7 @@ def main():
     print("1. Initializing audit graph...")
     try:
         graph = create_full_graph()
-        print("   ✓ Graph initialized successfully")
+        print("   [OK] Graph initialized successfully")
     except Exception as e:
         print(f"   ❌ Failed to initialize graph: {e}")
         sys.exit(1)
@@ -57,14 +57,14 @@ def main():
     # Load rubric
     print("\n2. Loading rubric...")
     try:
-        rubric_dimensions = load_rubric("rubric.json")
-        print(f"   ✓ Loaded {len(rubric_dimensions)} rubric dimensions")
+        rubric_dimensions = load_rubric()
+        print(f"   [OK] Loaded {len(rubric_dimensions)} rubric dimensions")
     except Exception as e:
         print(f"   ❌ Failed to load rubric: {e}")
         sys.exit(1)
     
     # Get repository URL and PDF path
-    # You can modify these or set them via environment variables
+    # Can be set via environment variables or command line arguments
     repo_url = os.getenv(
         "AUDIT_REPO_URL",
         "https://github.com/YOUR_USERNAME/automaton-auditor"
@@ -73,6 +73,12 @@ def main():
         "AUDIT_PDF_PATH",
         "reports/final_report.pdf"
     )
+    
+    # Allow command line arguments to override
+    if len(sys.argv) >= 2:
+        repo_url = sys.argv[1]
+    if len(sys.argv) >= 3:
+        pdf_path = sys.argv[2]
     
     # Check if PDF exists
     if not os.path.exists(pdf_path):
@@ -93,8 +99,8 @@ def main():
         "opinions": [],
         "final_report": None
     }
-    print(f"   ✓ Repository: {repo_url}")
-    print(f"   ✓ PDF Report: {pdf_path}")
+    print(f"   [OK] Repository: {repo_url}")
+    print(f"   [OK] PDF Report: {pdf_path}")
     
     # Run audit
     print("\n4. Running audit...")
@@ -103,7 +109,7 @@ def main():
     
     try:
         final_state = graph.invoke(initial_state)
-        print("\n   ✓ Audit completed successfully!")
+        print("\n   [OK] Audit completed successfully!")
     except KeyboardInterrupt:
         print("\n   ⚠ Audit interrupted by user")
         sys.exit(1)
@@ -122,16 +128,18 @@ def main():
         try:
             md_content = chief_justice.generate_markdown_report(final_report)
             
-            # Ensure output directory exists
-            output_dir = Path("audit") / "self_audit"
+            # Ensure output directory exists (submission requirement)
+            output_dir = Path("audit") / "report_onself_generated"
             output_dir.mkdir(parents=True, exist_ok=True)
             
-            # Save report
-            report_path = output_dir / "self_audit_report.md"
+            # Save report with timestamp
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            report_path = output_dir / f"self_audit_report_{timestamp}.md"
             with open(report_path, 'w', encoding='utf-8') as f:
                 f.write(md_content)
             
-            print(f"   ✓ Report saved to: {report_path}")
+            print(f"   [OK] Report saved to: {report_path}")
             
             # Print summary
             print("\n" + "=" * 70)

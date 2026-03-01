@@ -59,7 +59,7 @@ def main():
     # Load rubric
     print("\n2. Loading rubric...")
     try:
-        rubric_dimensions = load_rubric("rubric.json")
+        rubric_dimensions = load_rubric()
         print(f"   ✓ Loaded {len(rubric_dimensions)} rubric dimensions")
     except Exception as e:
         print(f"   ❌ Failed to load rubric: {e}")
@@ -131,8 +131,8 @@ def main():
         try:
             md_content = chief_justice.generate_markdown_report(final_report)
             
-            # Ensure output directory exists
-            output_dir = Path("audit") / "peer_audit"
+            # Ensure output directory exists (submission requirement)
+            output_dir = Path("audit") / "report_onpeer_generated"
             output_dir.mkdir(parents=True, exist_ok=True)
             
             # Extract peer username from repo URL for filename
@@ -141,12 +141,18 @@ def main():
                 if "/" in repo_url:
                     parts = repo_url.rstrip("/").split("/")
                     if len(parts) >= 2:
-                        peer_name = parts[-2] if parts[-1] == "automaton-auditor" else parts[-1]
+                        # Extract username from GitHub URL
+                        for i, part in enumerate(parts):
+                            if part == "github.com" and i + 1 < len(parts):
+                                peer_name = parts[i + 1]
+                                break
             except Exception:
                 pass
             
-            # Save report with peer identifier
-            report_path = output_dir / f"peer_audit_{peer_name}.md"
+            # Save report with peer identifier and timestamp
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            report_path = output_dir / f"peer_audit_{peer_name}_{timestamp}.md"
             with open(report_path, 'w', encoding='utf-8') as f:
                 f.write(md_content)
             

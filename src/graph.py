@@ -75,7 +75,7 @@ def initialize_tracing():
             print("⚠ Warning: LANGCHAIN_TRACING_V2=true but LANGCHAIN_API_KEY not set")
             print("  Tracing will not be enabled. Get your key from: https://smith.langchain.com/")
     else:
-        print("ℹ LangSmith tracing disabled (set LANGCHAIN_TRACING_V2=true to enable)")
+        print("[INFO] LangSmith tracing disabled (set LANGCHAIN_TRACING_V2=true to enable)")
 
 # Initialize tracing on module import
 initialize_tracing()
