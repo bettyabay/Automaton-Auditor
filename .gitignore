@@ -55,8 +55,3 @@ htmlcov/
 .env.local
 .env.*.local
 
-# Project specific
-
-
-audit/*
-!audit/.gitkeep
